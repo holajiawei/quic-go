@@ -118,14 +118,14 @@ var _ = Describe("Updatable AEAD", func() {
 							now := time.Now()
 							Expect(server.KeyPhase()).To(Equal(protocol.KeyPhaseZero))
 							encrypted0 := server.Seal(nil, msg, 0x1337, ad)
-							server.rollKeys(now)
+							server.rollKeys()
 							Expect(server.KeyPhase()).To(Equal(protocol.KeyPhaseOne))
 							encrypted1 := server.Seal(nil, msg, 0x1337, ad)
 							Expect(encrypted0).ToNot(Equal(encrypted1))
 							// expect opening to fail. The client didn't roll keys yet
 							_, err := client.Open(nil, encrypted1, now, 0x1337, protocol.KeyPhaseZero, ad)
 							Expect(err).To(MatchError(ErrDecryptionFailed))
-							client.rollKeys(now)
+							client.rollKeys()
 							decrypted, err := client.Open(nil, encrypted1, now, 0x1337, protocol.KeyPhaseOne, ad)
 							Expect(err).ToNot(HaveOccurred())
 							Expect(decrypted).To(Equal(msg))
@@ -142,7 +142,7 @@ var _ = Describe("Updatable AEAD", func() {
 							Expect(server.KeyPhase()).To(Equal(protocol.KeyPhaseZero))
 							_ = server.Seal(nil, msg, 0x1, ad)
 							// now received a message at key phase one
-							client.rollKeys(now)
+							client.rollKeys()
 							encrypted1 := client.Seal(nil, msg, 0x43, ad)
 							decrypted, err = server.Open(nil, encrypted1, now, 0x43, protocol.KeyPhaseOne, ad)
 							Expect(err).ToNot(HaveOccurred())
@@ -160,7 +160,7 @@ var _ = Describe("Updatable AEAD", func() {
 							// send one packet at key phase zero
 							_ = server.Seal(nil, msg, 0x1, ad)
 							// now receive a packet with key phase 1
-							client.rollKeys(now)
+							client.rollKeys()
 							encrypted1 := client.Seal(nil, msg, 0x44, ad)
 							Expect(server.KeyPhase()).To(Equal(protocol.KeyPhaseZero))
 							_, err = server.Open(nil, encrypted1, now, 0x44, protocol.KeyPhaseOne, ad)
@@ -185,7 +185,7 @@ var _ = Describe("Updatable AEAD", func() {
 							// send one packet at key phase zero
 							_ = server.Seal(nil, msg, 0x1, ad)
 							// now receive a packet with key phase 1
-							client.rollKeys(now)
+							client.rollKeys()
 							encrypted1 := client.Seal(nil, msg, 0x44, ad)
 							Expect(server.KeyPhase()).To(Equal(protocol.KeyPhaseZero))
 							_, err = server.Open(nil, encrypted1, now, 0x44, protocol.KeyPhaseOne, ad)
@@ -197,7 +197,7 @@ var _ = Describe("Updatable AEAD", func() {
 						})
 
 						It("errors when the peer starts with key phase 1", func() {
-							client.rollKeys(time.Now())
+							client.rollKeys()
 							encrypted := client.Seal(nil, msg, 0x1337, ad)
 							_, err := server.Open(nil, encrypted, time.Now(), 0x1337, protocol.KeyPhaseOne, ad)
 							Expect(err).To(MatchError("PROTOCOL_VIOLATION: wrong initial keyphase"))
@@ -209,7 +209,7 @@ var _ = Describe("Updatable AEAD", func() {
 							_, err := server.Open(nil, encrypted0, time.Now(), 0x42, protocol.KeyPhaseZero, ad)
 							Expect(err).ToNot(HaveOccurred())
 							// now receive a packet at key phase one, before having sent any packets
-							client.rollKeys(time.Now())
+							client.rollKeys()
 							encrypted1 := client.Seal(nil, msg, 0x42, ad)
 							_, err = server.Open(nil, encrypted1, time.Now(), 0x42, protocol.KeyPhaseOne, ad)
 							Expect(err).To(MatchError("PROTOCOL_VIOLATION: keys updated too quickly"))
@@ -249,6 +249,34 @@ var _ = Describe("Updatable AEAD", func() {
 							server.Seal(nil, msg, 1, ad)
 							server.SetLargestAcked(1)
 							Expect(server.KeyPhase()).To(Equal(protocol.KeyPhaseOne))
+						})
+
+						It("drops keys 3 PTOs after a key update", func() {
+							now := time.Now()
+							for i := 0; i < keyUpdateInterval; i++ {
+								pn := protocol.PacketNumber(i)
+								Expect(server.KeyPhase()).To(Equal(protocol.KeyPhaseZero))
+								server.Seal(nil, msg, pn, ad)
+								server.SetLargestAcked(pn)
+							}
+							// Now we've initiated the first key update.
+							// Decrypt a message sent from the client more than 3 PTO later to make sure the key is still there
+							threePTO := 3 * rttStats.PTO(false)
+							dataKeyPhaseZero := client.Seal(nil, msg, 1, ad)
+							_, err := server.Open(nil, dataKeyPhaseZero, now.Add(threePTO).Add(time.Second), 1, protocol.KeyPhaseZero, ad)
+							Expect(err).ToNot(HaveOccurred())
+							// Now receive a packet with key phase 1.
+							// This should start the timer to drop the keys after 3 PTOs.
+							client.rollKeys()
+							dataKeyPhaseOne := client.Seal(nil, msg, 10, ad)
+							t := now.Add(threePTO).Add(time.Second)
+							_, err = server.Open(nil, dataKeyPhaseOne, t, 10, protocol.KeyPhaseOne, ad)
+							Expect(err).ToNot(HaveOccurred())
+							// Make sure the keys are still here.
+							_, err = server.Open(nil, dataKeyPhaseZero, t.Add(threePTO*9/10), 1, protocol.KeyPhaseZero, ad)
+							Expect(err).ToNot(HaveOccurred())
+							_, err = server.Open(nil, dataKeyPhaseZero, t.Add(threePTO).Add(time.Nanosecond), 1, protocol.KeyPhaseZero, ad)
+							Expect(err).To(MatchError(ErrKeysDropped))
 						})
 					})
 
