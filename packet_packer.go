@@ -32,7 +32,7 @@ type sealer interface {
 }
 
 type payload struct {
-	frames []ackhandler.Frame
+	frames []*ackhandler.Frame
 	ack    *wire.AckFrame
 	length protocol.ByteCount
 }
@@ -45,7 +45,7 @@ type packedPacket struct {
 type packetContents struct {
 	header *wire.ExtendedHeader
 	ack    *wire.AckFrame
-	frames []ackhandler.Frame
+	frames []*ackhandler.Frame
 
 	length protocol.ByteCount
 }
@@ -132,12 +132,6 @@ type sealingManager interface {
 	GetHandshakeSealer() (handshake.LongHeaderSealer, error)
 	Get0RTTSealer() (handshake.LongHeaderSealer, error)
 	Get1RTTSealer() (handshake.ShortHeaderSealer, error)
-}
-
-type frameSource interface {
-	HasData() bool
-	AppendStreamFrames([]ackhandler.Frame, protocol.ByteCount) ([]ackhandler.Frame, protocol.ByteCount)
-	AppendControlFrames([]ackhandler.Frame, protocol.ByteCount) ([]ackhandler.Frame, protocol.ByteCount)
 }
 
 type ackFrameSource interface {
@@ -228,7 +222,7 @@ func (p *packetPacker) PackConnectionClose(quicErr *qerr.QuicError) (*coalescedP
 			ReasonPhrase:       reasonPhrase,
 		}
 		payload := payload{
-			frames: []ackhandler.Frame{{Frame: ccf}},
+			frames: []*ackhandler.Frame{{Frame: ccf}},
 			length: ccf.Length(p.version),
 		}
 
@@ -464,14 +458,14 @@ func (p *packetPacker) maybeAppendCryptoPacket(buffer *packetBuffer, maxPacketSi
 			if f == nil {
 				break
 			}
-			payload.frames = append(payload.frames, ackhandler.Frame{Frame: f})
+			payload.frames = append(payload.frames, &ackhandler.Frame{Frame: f})
 			frameLen := f.Length(p.version)
 			payload.length += frameLen
 			remainingLen -= frameLen
 		}
 	} else if s.HasData() {
 		cf := s.PopCryptoFrame(remainingLen)
-		payload.frames = []ackhandler.Frame{{Frame: cf}}
+		payload.frames = []*ackhandler.Frame{{Frame: cf}}
 		payload.length += cf.Length(p.version)
 	}
 	return p.appendPacket(buffer, hdr, payload, encLevel, sealer)
@@ -510,7 +504,7 @@ func (p *packetPacker) maybeAppendAppDataPacket(buffer *packetBuffer, maxPacketS
 	if len(payload.frames) == 0 { // the packet only contains an ACK
 		if p.numNonAckElicitingAcks >= protocol.MaxNonAckElicitingAcks {
 			ping := &wire.PingFrame{}
-			payload.frames = append(payload.frames, ackhandler.Frame{Frame: ping})
+			payload.frames = append(payload.frames, &ackhandler.Frame{Frame: ping})
 			payload.length += ping.Length(p.version)
 			p.numNonAckElicitingAcks = 0
 		} else {
@@ -550,7 +544,7 @@ func (p *packetPacker) composeNextPacket(maxFrameSize protocol.ByteCount, ackAll
 			if f == nil {
 				break
 			}
-			payload.frames = append(payload.frames, ackhandler.Frame{Frame: f})
+			payload.frames = append(payload.frames, &ackhandler.Frame{Frame: f})
 			payload.length += f.Length(p.version)
 		}
 	}
